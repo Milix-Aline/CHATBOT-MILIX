@@ -1,2 +1,2 @@
 # CHATBOT-MILIX
-Implémentation d'un chatbot à l'aide de l'architecture RAG
+Ce projet à pour but Implémenter un chatbot à l'aide de l'architecture RAG
