@@ -40,8 +40,8 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 CLF_PATH = os.path.join(EXPORT_DIR, "emotion_clf.joblib")       # classifieur TF-IDF + LinearSVC
 LABELS_PATH = os.path.join(EXPORT_DIR, "emotion_labels.json")   # mapping d'étiquettes
 EMB_MODEL_NAME = "all-MiniLM-L6-v2"                             # pour RAG
-OLLAMA_URL = "http://localhost:11434/api/chat"                  # API locale d'Ollama
-OLLAMA_MODEL = "llama2:7b-chat"                                 # ou "mistral"
+OLLAMA_URL = "http://localhost:11434/api/chat"                  # ✅ CORRECTION: API correcte d'Ollama
+OLLAMA_MODEL = "llama2:latest"                                # ou "mistral"
 FORCE_FRENCH = True                                             # force les réponses en FR
 
 # Connexion PostgreSQL
@@ -491,24 +491,25 @@ def search(index: faiss.Index, embedder: SentenceTransformer, query: str,
         return []
 
 # ===============================
-# 5. OLLAMA CHAT AMÉLIORÉ
+# 5. OLLAMA CHAT AMÉLIORÉ (✅ CORRIGÉ)
 # ===============================
 def ollama_chat(messages: List[dict], model: str = OLLAMA_MODEL, 
                url: str = OLLAMA_URL, temperature: float = DEFAULT_TEMPERATURE,
                max_retries: int = 3) -> str:
-    """Interface Ollama avec retry et gestion d'erreurs améliorée."""
+    """Interface Ollama avec le bon endpoint et format."""
     if not messages:
         return "[Erreur] Pas de messages à envoyer"
     
+    # Format correct pour l'API Ollama
     payload = {
         "model": model,
         "messages": messages,
+        "stream": False,  # Important: désactiver le streaming
         "options": {
             "temperature": temperature,
-            "num_predict": 512,  # Limitation de la longueur
+            "num_predict": 512,
             "top_p": 0.9
-        },
-        "stream": False
+        }
     }
     
     for attempt in range(max_retries):
@@ -523,35 +524,28 @@ def ollama_chat(messages: List[dict], model: str = OLLAMA_MODEL,
             response.raise_for_status()
             
             data = response.json()
+            logger.debug(f"Réponse Ollama: {type(data)} - {list(data.keys()) if isinstance(data, dict) else 'non-dict'}")
             
-            # Gestion des différents formats de réponse Ollama
-            if isinstance(data, dict):
-                if "message" in data and "content" in data["message"]:
-                    content = data["message"]["content"].strip()
-                    if content:
-                        return content
-                elif "response" in data:
-                    content = data["response"].strip()
-                    if content:
-                        return content
-            
-            # Fallback pour les réponses streaming
-            if isinstance(data, list):
-                content = "".join([
-                    item.get("message", {}).get("content", "") 
-                    for item in data if isinstance(item, dict)
-                ]).strip()
+            # Format de réponse Ollama standard
+            if isinstance(data, dict) and "message" in data:
+                content = data["message"].get("content", "").strip()
                 if content:
                     return content
             
-            logger.warning(f"Format de réponse Ollama inattendu: {type(data)}")
+            # Fallback pour d'autres formats
+            if isinstance(data, dict) and "response" in data:
+                content = data["response"].strip()
+                if content:
+                    return content
+            
+            logger.warning(f"Format de réponse Ollama inattendu: {data}")
             return "[Erreur] Format de réponse inattendu d'Ollama"
             
         except requests.exceptions.Timeout:
             logger.warning(f"Timeout Ollama (tentative {attempt + 1}/{max_retries})")
             if attempt == max_retries - 1:
                 return "[Erreur] Timeout - Ollama met trop de temps à répondre"
-            time.sleep(2 ** attempt)  # Backoff exponentiel
+            time.sleep(2 ** attempt)
             
         except requests.exceptions.ConnectionError:
             logger.warning(f"Connexion échouée (tentative {attempt + 1}/{max_retries})")
@@ -875,7 +869,49 @@ INSTRUCTIONS:
             return False
 
 # ===============================
-# 7. MAIN — EXÉCUTION AMÉLIORÉE
+# 7. FONCTION DE TEST RAPIDE (OPTIONNEL)
+# ===============================
+def debug_ollama():
+    """Debug Ollama étape par étape - fonction utilitaire."""
+    import requests
+    
+    print("🔍 Test de connexion Ollama...")
+    
+    # Test 1: Service disponible
+    try:
+        r = requests.get("http://localhost:11434/api/tags", timeout=5)
+        print(f"✅ Ollama service: {r.status_code}")
+        if r.status_code == 200:
+            models = r.json().get('models', [])
+            print(f"   Modèles disponibles: {[m['name'] for m in models]}")
+    except Exception as e:
+        print(f"❌ Ollama service non accessible: {e}")
+        return False
+    
+    # Test 2: Chat endpoint
+    try:
+        payload = {
+            "model": "llama2:latest",
+            "messages": [{"role": "user", "content": "Test simple"}],
+            "stream": False
+        }
+        r = requests.post("http://localhost:11434/api/chat", json=payload, timeout=30)
+        print(f"✅ Chat endpoint: {r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            print(f"   Structure réponse: {list(data.keys())}")
+            if "message" in data:
+                content = data["message"].get("content", "")
+                print(f"   Contenu: {content[:50]}...")
+                return True
+    except Exception as e:
+        print(f"❌ Chat endpoint: {e}")
+        return False
+    
+    return False
+
+# ===============================
+# 8. MAIN — EXÉCUTION AMÉLIORÉE
 # ===============================
 def main():
     """Fonction principale avec interface utilisateur améliorée."""
@@ -889,6 +925,8 @@ def main():
     if not bot.test_connection():
         print("❌ Erreur: Services externes non disponibles")
         print("Vérifiez qu'Ollama est démarré et que PostgreSQL est accessible")
+        print("\n Pour débugger Ollama, vous pouvez aussi lancer:")
+        print("   python -c \"from try import debug_ollama; debug_ollama()\"")
         return
     
     # Configuration (première fois: retrain_clf=True, refresh_store=True)
@@ -913,6 +951,7 @@ def main():
    - 'stats' : Afficher les statistiques
    - 'clear' : Vider l'historique
    - 'test' : Tester les connexions
+   - 'debug' : Debug Ollama détaillé
 
 Tapez votre message et appuyez sur Entrée...
 """)
@@ -927,7 +966,7 @@ Tapez votre message et appuyez sur Entrée...
                 
             # Commandes spéciales
             if user_input.lower() in {'quit', 'exit', 'stop', 'bye'}:
-                print("👋 Au revoir ! Prenez soin de vous.")
+                print(" Au revoir ! Prenez soin de vous.")
                 break
                 
             elif user_input.lower() == 'stats':
@@ -943,7 +982,7 @@ Tapez votre message et appuyez sur Entrée...
                 
             elif user_input.lower() == 'clear':
                 bot.clear_history()
-                print("🧹 Historique vidé")
+                print("🧹Historique vidé")
                 continue
                 
             elif user_input.lower() == 'test':
@@ -951,6 +990,10 @@ Tapez votre message et appuyez sur Entrée...
                     print("✅ Toutes les connexions sont OK")
                 else:
                     print("❌ Problème de connexion détecté")
+                continue
+            
+            elif user_input.lower() == 'debug':
+                debug_ollama()
                 continue
             
             # Génération de la réponse
@@ -961,11 +1004,11 @@ Tapez votre message et appuyez sur Entrée...
             print(f"\n🤖 Assistant ({response_time:.1f}s): {response}")
             
         except KeyboardInterrupt:
-            print("\n\n👋 Interruption détectée. Au revoir !")
+            print("\n\n Interruption détectée. Au revoir !")
             break
             
         except EOFError:
-            print("\n👋 Session terminée. Au revoir !")
+            print("\n Session terminée. Au revoir !")
             break
             
         except Exception as e:
