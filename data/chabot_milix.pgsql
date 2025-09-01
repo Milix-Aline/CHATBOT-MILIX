@@ -1,1 +1,0 @@
-CREATE DATABASE chatbot_milix;
